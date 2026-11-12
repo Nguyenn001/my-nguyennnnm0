@@ -1,0 +1,30 @@
+body {
+            background-color: #060c14;
+            color: #f1f5f9;
+            font-family: 'Inter', sans-serif;
+            overflow-x: hidden;
+        }
+        .glass-card {
+            background: rgba(16, 30, 49, 0.78);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(148, 163, 184, 0.14);
+        }
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0b1523;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 9999px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #10b981;
+        }
+        @media print {
+            .no-print { display: none !important; }
+            body { background: #ffffff !important; color: #0f172a !important; }
+            .glass-card { background: #ffffff !important; border: 1px solid #cbd5e1 !important; color: #0f172a !important; }
+        }

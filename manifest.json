@@ -1,0 +1,17 @@
+
+{
+  "name": "Football Manager",
+  "short_name": "Football",
+  "description": "Ứng dụng của tôi",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2196F3",
+  "icons": [
+    {
+      "src": "icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
