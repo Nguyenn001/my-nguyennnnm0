@@ -1,4 +1,4 @@
-FOOTBALL TOURNAMENT MANAGER - CẤU TRÚC ĐÃ TÁCH
+FOOTBALL TOURNAMENT MANAGER 
 
 Cấu trúc:
 - index.html                 : Khung giao diện HTML
@@ -6,11 +6,6 @@ Cấu trúc:
 - js/tailwind-config.js      : Cấu hình Tailwind
 - js/app.js                 : JavaScript chính của ứng dụng
 - js/firebase-init.js       : Khởi tạo Firebase (ES module)
-
-Cách mở:
-1. Giải nén toàn bộ thư mục.
-2. Giữ nguyên cấu trúc thư mục và vị trí các tệp.
-3. Mở index.html bằng trình duyệt.
 
 Lưu ý:
 - Không di chuyển riêng index.html hoặc các tệp trong css/js.
