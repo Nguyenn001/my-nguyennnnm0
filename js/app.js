@@ -2314,10 +2314,60 @@ function showToast(message, type = 'success') {
 }
 
 // ============================================================================
-// 13. VERSIONED SNAPSHOT SYSTEM – LƯU NHIỀU PHIÊN BẢN & KHÔI PHỤC (CHỐNG TRÀN QUOTA)
+// 13. VERSIONED SNAPSHOT SYSTEM – LƯU NHIỀU PHIÊN BẢN & KHÔI PHỤC (NÉN DỮ LIỆU & CHỐNG TRÀN QUOTA)
 // ============================================================================
 const SNAPSHOT_STORAGE_KEY = 'football_manager_snapshots_v1';
-const SNAPSHOT_LIMIT = 15;
+const SNAPSHOT_LIMIT = 10;
+
+// Nén dữ liệu giải đấu trước khi lưu vào snapshot (loại bỏ lịch thi đấu các giải chưa đá trận nào để giảm ~90% dung lượng)
+function compressAppStateForSnapshot(state) {
+    const clone = JSON.parse(JSON.stringify(state));
+    if (clone && clone.tournaments && typeof clone.tournaments === 'object') {
+        Object.keys(clone.tournaments).forEach(tid => {
+            const t = clone.tournaments[tid];
+            if (t && Array.isArray(t.matches)) {
+                const hasAnyPlayed = t.matches.some(m => m && m.played);
+                if (!hasAnyPlayed) {
+                    t._matchesOmitted = true;
+                    t.matches = [];
+                }
+            }
+        });
+    }
+    return JSON.stringify(clone);
+}
+
+// Khôi phục lại lịch thi đấu mặc định cho các giải chưa đá khi nạp snapshot đã nén
+function hydrateRestoredAppState(restored) {
+    if (!restored || typeof restored !== 'object' || !('tournaments' in restored)) {
+        throw new Error('Dữ liệu snapshot không hợp lệ');
+    }
+    if (restored.tournaments && typeof restored.tournaments === 'object') {
+        Object.keys(restored.tournaments).forEach(tid => {
+            const t = restored.tournaments[tid];
+            if (t && t._matchesOmitted) {
+                delete t._matchesOmitted;
+                if (t.format === 'group-knockout') t.matches = generateGroupKnockoutMatches(t.teams || []);
+                else if (t.format === 'double-elimination') t.matches = generateDoubleEliminationMatches(t.teams || []);
+                else if (t.format === 'swiss') t.matches = generateSwissLeagueMatches(t.teams || [], t.isBuiltIn ? 8 : 6);
+                else t.matches = generateRoundRobinMatches(t.teams || [], t.format === 'double-league');
+            }
+        });
+    }
+    return restored;
+}
+
+function isQuotaError(err) {
+    if (!err) return false;
+    const msg = String(err.message || err).toLowerCase();
+    return err.name === 'QuotaExceededError'
+        || err.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+        || err.code === 22
+        || err.code === 1014
+        || msg.includes('quota')
+        || msg.includes('exceeded')
+        || msg.includes('storage');
+}
 
 function readSnapshots() {
     try {
@@ -2335,10 +2385,24 @@ function writeSnapshots(items) {
         try {
             localStorage.setItem(SNAPSHOT_STORAGE_KEY, JSON.stringify(trimmed));
             updateSnapshotUI();
-            return;
+            return true;
         } catch (err) {
-            if (err && (err.name === 'QuotaExceededError' || err.code === 22 || String(err).includes('quota'))) {
-                trimmed.pop(); // Xóa bớt bản sao lưu cũ nhất để giải phóng dung lượng
+            if (isQuotaError(err)) {
+                if (trimmed.length > 1) {
+                    trimmed.pop(); // Xóa bản sao lưu cũ nhất để lấy chỗ cho bản mới nhất
+                } else {
+                    // Nếu chỉ còn 1 bản mới nhất mà vẫn đầy, dọn dẹp các khóa cũ khác trong localStorage
+                    const keysToRemove = [];
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const k = localStorage.key(i);
+                        if (k && k !== SNAPSHOT_STORAGE_KEY) keysToRemove.push(k);
+                    }
+                    if (keysToRemove.length > 0) {
+                        keysToRemove.forEach(k => localStorage.removeItem(k));
+                    } else {
+                        throw err;
+                    }
+                }
             } else {
                 throw err;
             }
@@ -2346,17 +2410,25 @@ function writeSnapshots(items) {
     }
     localStorage.setItem(SNAPSHOT_STORAGE_KEY, '[]');
     updateSnapshotUI();
+    return false;
 }
 
-function createSnapshot(label = 'Tự động') {
+function createSnapshot(label = 'Thủ công', forceDuplicate = false) {
     try {
         const snapshots = readSnapshots();
-        const serialized = JSON.stringify(appState);
+        const serialized = compressAppStateForSnapshot(appState);
         const latest = snapshots[0];
-        // Tránh tạo phiên bản trùng dữ liệu liên tiếp
-        if (latest && latest.data === serialized) return latest;
+        // Nếu người dùng bấm thủ công, cập nhật lại bản gần nhất hoặc tạo mới rõ ràng
+        if (!forceDuplicate && latest && latest.data === serialized) {
+            latest.createdAt = new Date().toISOString();
+            latest.label = label;
+            writeSnapshots(snapshots);
+            return latest;
+        }
         const item = {
-            id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2)),
+            id: (typeof crypto !== 'undefined' && crypto.randomUUID)
+                ? crypto.randomUUID()
+                : (String(Date.now()) + '_' + Math.random().toString(16).slice(2)),
             label,
             createdAt: new Date().toISOString(),
             data: serialized
@@ -2365,7 +2437,8 @@ function createSnapshot(label = 'Tự động') {
         writeSnapshots(snapshots);
         return item;
     } catch (error) {
-        showToast('Không thể tạo bản sao lưu: ' + error.message, 'error');
+        console.error('Lỗi tạo snapshot:', error);
+        showToast('Không thể tạo bản sao lưu: ' + (error.message || error), 'error');
         return null;
     }
 }
@@ -2423,10 +2496,9 @@ function showSnapshotHistory() {
     if (!confirm('Khôi phục phiên bản đã chọn? Trạng thái hiện tại sẽ được lưu thành một snapshot trước khi khôi phục.')) return;
     createSnapshot('Trước khi khôi phục');
     try {
-        const restored = JSON.parse(snapshots[index].data);
-        if (!restored || typeof restored !== 'object' || !('tournaments' in restored)) throw new Error('Tệp snapshot không hợp lệ');
+        const restored = hydrateRestoredAppState(JSON.parse(snapshots[index].data));
         appState = restored;
-        createSnapshot('Khôi phục: ' + snapshots[index].label);
+        createSnapshot('Khôi phục: ' + snapshots[index].label, true);
         renderMainView();
         showToast('Đã khôi phục trạng thái thành công!', 'success');
     } catch (error) {
@@ -2480,8 +2552,7 @@ function loadLatestSnapshot() {
     const latest = readSnapshots()[0];
     if (!latest) return false;
     try {
-        const restored = JSON.parse(latest.data);
-        if (!restored || typeof restored !== 'object' || !('tournaments' in restored)) return false;
+        const restored = hydrateRestoredAppState(JSON.parse(latest.data));
         appState = restored;
         return true;
     } catch (error) {
