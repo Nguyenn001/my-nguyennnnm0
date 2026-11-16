@@ -2318,7 +2318,6 @@ function showToast(message, type = 'success') {
 // ============================================================================
 const SNAPSHOT_STORAGE_KEY = 'football_manager_snapshots_v1';
 const SNAPSHOT_LIMIT = 15;
-let snapshotDebounce = null;
 
 function readSnapshots() {
     try {
@@ -2372,8 +2371,7 @@ function createSnapshot(label = 'Tự động') {
 }
 
 function triggerCloudAutoSave() {
-    clearTimeout(snapshotDebounce);
-    snapshotDebounce = setTimeout(() => createSnapshot('Tự động'), 1200);
+    // Đã tắt cơ chế tự động tạo snapshot; chỉ tạo snapshot khi người dùng bấm thủ công
 }
 
 function updateSnapshotUI() {
@@ -2498,5 +2496,4 @@ window.addEventListener('DOMContentLoaded', () => {
     loadLatestSnapshot();
     updateSnapshotUI();
     renderMainView();
-    if (!readSnapshots().length) createSnapshot('Khởi tạo');
 });
