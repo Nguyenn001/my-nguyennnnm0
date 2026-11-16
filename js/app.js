@@ -759,6 +759,95 @@ function calculateTeamOfTheSeason() {
     return buildBestXIByTactics(scoredList);
 }
 
+function calculateAllTimeBestXI() {
+    const currentTots = calculateTeamOfTheSeason();
+    const allTimeMap = {};
+
+    const ensureAllTimeEntry = (player, team, roleHint = null) => {
+        const key = `${player}|||${team}`;
+        if (!allTimeMap[key]) {
+            allTimeMap[key] = {
+                player,
+                team,
+                role: roleHint || parsePlayerRole(player),
+                totsCount: 0,
+                individualAwards: 0,
+                goals: 0,
+                assists: 0,
+                cs: 0,
+                appearances: 0,
+                trophies: [],
+                rating: 0
+            };
+        }
+        return allTimeMap[key];
+    };
+
+    // 1. Cộng điểm từ mùa giải đang diễn ra
+    currentTots.forEach(p => {
+        const entry = ensureAllTimeEntry(p.player, p.team, p.role);
+        entry.goals += p.goals || 0;
+        entry.assists += p.assists || 0;
+        entry.cs += p.cs || 0;
+        entry.appearances += p.appearances || 0;
+        entry.trophies = Array.from(new Set([...entry.trophies, ...(p.trophies || [])]));
+        entry.rating += (p.rating || 0) * 0.85;
+    });
+
+    // 2. Cộng điểm tích lũy từ lịch sử các mùa giải đã chốt (Trophy Cabinet bất biến)
+    (appState.honorsHistory || []).forEach(h => {
+        if (Array.isArray(h.totsPlayers) && h.totsPlayers.length > 0) {
+            h.totsPlayers.forEach(p => {
+                const entry = ensureAllTimeEntry(p.player, p.team, p.role);
+                entry.totsCount += 1;
+                entry.goals += p.goals || 0;
+                entry.assists += p.assists || 0;
+                entry.cs += p.cs || 0;
+                entry.appearances += p.appearances || 0;
+                entry.rating += 35 + ((p.rating || 0) * 0.5);
+            });
+        } else if (typeof h.tots === 'string' && h.tots.trim()) {
+            h.tots.split(',').map(s => s.trim()).filter(Boolean).forEach(item => {
+                const match = item.match(/^(.+?)\s*\(([^()]+)\)$/);
+                if (match) {
+                    const player = match[1].trim();
+                    const team = match[2].trim();
+                    const entry = ensureAllTimeEntry(player, team);
+                    entry.totsCount += 1;
+                    entry.rating += 40;
+                }
+            });
+        }
+
+        const parseWinner = (str) => {
+            if (!str || str === 'Chưa có') return null;
+            const m = str.match(/^(.+?)\s*\(([^-]+?)\s*-/);
+            return m ? { player: m[1].trim(), team: m[2].trim() } : null;
+        };
+
+        const bdWinner = parseWinner(h.ballonDor);
+        if (bdWinner) {
+            const entry = ensureAllTimeEntry(bdWinner.player, bdWinner.team);
+            entry.individualAwards += 1;
+            entry.rating += 30;
+        }
+
+        const yashinWinner = parseWinner(h.yashin);
+        if (yashinWinner) {
+            const entry = ensureAllTimeEntry(yashinWinner.player, yashinWinner.team, 'GK');
+            entry.individualAwards += 1;
+            entry.rating += 30;
+        }
+    });
+
+    const formattedList = Object.values(allTimeMap).map(p => ({
+        ...p,
+        rating: Number(p.rating.toFixed(1))
+    }));
+
+    return buildBestXIByTactics(formattedList);
+}
+
 // ============================================================================
 // 5. ĐIỀU HƯỚNG & RENDER GIAO DIỆN CHÍNH
 // ============================================================================
@@ -1002,6 +1091,50 @@ function renderHonorsView(container) {
                             `).join('')}
                         </div>
                     ` : `<p class="text-xs text-slate-400">Chưa đủ dữ liệu trận đấu để bình chọn Đội hình tiêu biểu mùa giải.</p>`}
+                </div>`;
+            })()}
+
+            <!-- Đội Hình Hay Nhất Mọi Thời Đại (All-Time Best XI) -->
+            ${(() => {
+                const allTimeXI = calculateAllTimeBestXI();
+                const roleLabels = { GK: 'Thủ Môn', DEF: 'Hậu Vệ', MID: 'Tiền Vệ', FWD: 'Tiền Đạo' };
+                return `
+                <div class="rounded-2xl bg-gradient-to-br from-amber-950/40 via-pitch-900 to-indigo-950/40 border border-amber-500/40 p-5 shadow-xl">
+                    <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+                        <div>
+                            <h3 class="text-base font-extrabold text-white flex items-center gap-2">
+                                <i class="fa-solid fa-crown text-amber-400"></i>
+                                <span>Đội Hình Hay Nhất Mọi Thời Đại (All-Time Best XI - 4-3-3)</span>
+                            </h3>
+                            <p class="text-[11px] text-slate-400 mt-0.5">
+                                Vinh danh 11 huyền thoại xuất sắc nhất lịch sử giải đấu dựa trên số lần vào ĐHTB mùa giải, danh hiệu cá nhân & đóng góp tích lũy qua các mùa.
+                            </p>
+                        </div>
+                        <span class="px-2.5 py-1 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[11px] font-bold">
+                            <i class="fa-solid fa-shield-halved mr-1"></i>Tích lũy đa mùa giải
+                        </span>
+                    </div>
+                    ${allTimeXI.length > 0 ? `
+                        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                            ${allTimeXI.map(p => `
+                                <div class="p-3 rounded-xl bg-pitch-950/90 border border-amber-500/25 flex items-center justify-between gap-2">
+                                    <div class="min-w-0">
+                                        <div class="flex items-center gap-1.5 flex-wrap">
+                                            <span class="text-[10px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300">${roleLabels[p.role] || p.role}</span>
+                                            ${p.totsCount > 0 ? `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300">${p.totsCount}x TOTS</span>` : ''}
+                                            ${p.individualAwards > 0 ? `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300">${p.individualAwards}x QBV/Yashin</span>` : ''}
+                                        </div>
+                                        <p class="text-xs font-bold text-white truncate mt-1">${escHtml(p.player)}</p>
+                                        <p class="text-[11px] text-slate-400 truncate">${escHtml(p.team)}</p>
+                                    </div>
+                                    <div class="text-right shrink-0">
+                                        <span class="text-xs font-black text-amber-400">${p.rating}đ</span>
+                                        <p class="text-[10px] text-slate-400">${p.role === 'GK' || p.role === 'DEF' ? `${p.cs} CS` : `${p.goals}G / ${p.assists}A`}</p>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    ` : `<p class="text-xs text-slate-400">Chưa có dữ liệu lịch sử để bình chọn Đội hình hay nhất mọi thời đại. Hãy thi đấu và nhấn "Chốt Danh Hiệu Mùa Giải".</p>`}
                 </div>`;
             })()}
 
@@ -1989,13 +2122,15 @@ function saveCurrentAwardsSnapshot() {
         .filter(t => t.champion)
         .map(t => `${t.shortName}: ${t.champion}`);
 
+    const currentTotsList = calculateTeamOfTheSeason();
     const snapshot = {
         id: 'season_' + Date.now(),
         seasonName: `Mùa Giải #${appState.honorsHistory.length + 1}`,
         ballonDor: ballonDorRanking[0] ? `${ballonDorRanking[0].player} (${ballonDorRanking[0].team} - ${ballonDorRanking[0].score}đ)` : 'Chưa có',
         yashin: yashinRanking[0] ? `${yashinRanking[0].player} (${yashinRanking[0].team} - ${yashinRanking[0].cs} CS)` : 'Chưa có',
         championsSummary: champions.length > 0 ? champions.join(' | ') : 'Chưa trao cúp giải đấu',
-        tots: calculateTeamOfTheSeason().map(p => `${p.player} (${p.team})`).join(', ')
+        tots: currentTotsList.map(p => `${p.player} (${p.team})`).join(', '),
+        totsPlayers: currentTotsList
     };
 
     appState.honorsHistory.unshift(snapshot);
@@ -2037,6 +2172,10 @@ function copyHonorsText() {
     });
     if (ballonDorRanking[0]) lines.push(`⚽ Quả Bóng Vàng: ${ballonDorRanking[0].player} (${ballonDorRanking[0].team} - ${ballonDorRanking[0].score}đ)`);
     if (yashinRanking[0]) lines.push(`🧤 Thủ Môn Xuất Sắc Nhất: ${yashinRanking[0].player} (${yashinRanking[0].team} - ${yashinRanking[0].cs} CS)`);
+    const allTimeXI = calculateAllTimeBestXI();
+    if (allTimeXI.length > 0) {
+        lines.push(`👑 Đội Hình Hay Nhất Mọi Thời Đại (4-3-3): ${allTimeXI.map(p => `${p.player} [${p.team}]`).join(', ')}`);
+    }
 
     const text = lines.join('\n');
     const ta = document.createElement('textarea');
