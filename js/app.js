@@ -2314,10 +2314,10 @@ function showToast(message, type = 'success') {
 }
 
 // ============================================================================
-// 13. VERSIONED SNAPSHOT SYSTEM – LƯU NHIỀU PHIÊN BẢN & KHÔI PHỤC
+// 13. VERSIONED SNAPSHOT SYSTEM – LƯU NHIỀU PHIÊN BẢN & KHÔI PHỤC (CHỐNG TRÀN QUOTA)
 // ============================================================================
 const SNAPSHOT_STORAGE_KEY = 'football_manager_snapshots_v1';
-const SNAPSHOT_LIMIT = 40;
+const SNAPSHOT_LIMIT = 15;
 let snapshotDebounce = null;
 
 function readSnapshots() {
@@ -2331,7 +2331,21 @@ function readSnapshots() {
 }
 
 function writeSnapshots(items) {
-    localStorage.setItem(SNAPSHOT_STORAGE_KEY, JSON.stringify(items.slice(0, SNAPSHOT_LIMIT)));
+    let trimmed = items.slice(0, SNAPSHOT_LIMIT);
+    while (trimmed.length > 0) {
+        try {
+            localStorage.setItem(SNAPSHOT_STORAGE_KEY, JSON.stringify(trimmed));
+            updateSnapshotUI();
+            return;
+        } catch (err) {
+            if (err && (err.name === 'QuotaExceededError' || err.code === 22 || String(err).includes('quota'))) {
+                trimmed.pop(); // Xóa bớt bản sao lưu cũ nhất để giải phóng dung lượng
+            } else {
+                throw err;
+            }
+        }
+    }
+    localStorage.setItem(SNAPSHOT_STORAGE_KEY, '[]');
     updateSnapshotUI();
 }
 
