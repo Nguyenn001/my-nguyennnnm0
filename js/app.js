@@ -602,6 +602,163 @@ function calculateGlobalAwards() {
     return { ballonDorRanking, yashinRanking, clubTrophies };
 }
 
+
+// ============================================================================
+// TÍNH TOÁN ĐỘI HÌNH TIÊU BIỂU MÙA GIẢI (TOTS) & LƯỢT TRẬN (TOTW)
+// ============================================================================
+function parsePlayerRole(playerStr) {
+    const match = playerStr.match(/\((?:\d+\s*)?([A-Z]+)\)/i);
+    const pos = match ? match[1].toUpperCase() : 'CMF';
+    if (pos === 'GK') return 'GK';
+    if (['CB', 'RB', 'LB', 'RWB', 'LWB'].includes(pos)) return 'DEF';
+    if (['CF', 'ST', 'RW', 'LW', 'RWF', 'LWF', 'SS'].includes(pos)) return 'FWD';
+    return 'MID';
+}
+
+function buildBestXIByTactics(playerScoresList) {
+    // Sơ đồ chiến thuật chuẩn 4-3-3 (1 GK - 4 DEF - 3 MID - 3 FWD) đảm bảo sự cân bằng & linh hoạt
+    const quotas = { GK: 1, DEF: 4, MID: 3, FWD: 3 };
+    const selected = { GK: [], DEF: [], MID: [], FWD: [] };
+    const usedPlayers = new Set();
+
+    const sorted = [...playerScoresList].sort((a, b) => b.rating - a.rating);
+    for (const p of sorted) {
+        const key = `${p.player}|||${p.team}`;
+        if (usedPlayers.has(key)) continue;
+        const role = parsePlayerRole(p.player);
+        if (selected[role].length < quotas[role]) {
+            selected[role].push({ ...p, role });
+            usedPlayers.add(key);
+        }
+    }
+    return [...selected.GK, ...selected.DEF, ...selected.MID, ...selected.FWD];
+}
+
+function calculateTeamOfTheMatchday(tournamentId, roundNum) {
+    const t = appState.tournaments[tournamentId];
+    if (!t) return [];
+    const roundMatches = t.matches.filter(m => m.played && String(m.round) === String(roundNum));
+    if (!roundMatches.length) return [];
+
+    const masterClubs = getMasterClubsMap();
+    const perfMap = {};
+
+    const ensureEntry = (player, team) => {
+        const key = `${player}|||${team}`;
+        if (!perfMap[key]) {
+            perfMap[key] = { player, team, goals: 0, assists: 0, cs: 0, decisiveWin: 0, rating: 6.0 };
+        }
+        return perfMap[key];
+    };
+
+    roundMatches.forEach(m => {
+        const homeClub = masterClubs[m.home];
+        const awayClub = masterClubs[m.away];
+        const homeWon = m.homeScore > m.awayScore;
+        const awayWon = m.awayScore > m.homeScore;
+
+        if (homeClub) {
+            homeClub.players.forEach((pl, idx) => {
+                const entry = ensureEntry(pl, m.home);
+                if (homeWon) { entry.decisiveWin += 1; entry.rating += 0.8; }
+                if (m.awayScore === 0 && (idx === 0 || parsePlayerRole(pl) === 'DEF')) {
+                    entry.cs += 1;
+                    entry.rating += (idx === 0 ? 2.2 : 1.3);
+                }
+            });
+        }
+        if (awayClub) {
+            awayClub.players.forEach((pl, idx) => {
+                const entry = ensureEntry(pl, m.away);
+                if (awayWon) { entry.decisiveWin += 1; entry.rating += 0.8; }
+                if (m.homeScore === 0 && (idx === 0 || parsePlayerRole(pl) === 'DEF')) {
+                    entry.cs += 1;
+                    entry.rating += (idx === 0 ? 2.2 : 1.3);
+                }
+            });
+        }
+
+        (m.events || []).forEach(ev => {
+            const entry = ensureEntry(ev.player, ev.team);
+            if (ev.type === 'goal') { entry.goals += 1; entry.rating += 2.0; }
+            if (ev.type === 'assist') { entry.assists += 1; entry.rating += 1.4; }
+        });
+    });
+
+    return buildBestXIByTactics(Object.values(perfMap));
+}
+
+function calculateTeamOfTheSeason() {
+    const masterClubs = getMasterClubsMap();
+    const { clubTrophies } = calculateGlobalAwards();
+    const seasonMap = {};
+
+    const ensureSeasonEntry = (player, team) => {
+        const key = `${player}|||${team}`;
+        if (!seasonMap[key]) {
+            seasonMap[key] = {
+                player,
+                team,
+                appearances: 0,
+                goals: 0,
+                assists: 0,
+                cs: 0,
+                keyMatchImpact: 0,
+                trophies: clubTrophies[team] || [],
+                rating: 0
+            };
+        }
+        return seasonMap[key];
+    };
+
+    Object.values(appState.tournaments).forEach(t => {
+        const totalRounds = Math.max(...t.matches.map(m => Number(m.round) || 1), 1);
+        t.matches.filter(m => m.played).forEach(m => {
+            const isKeyOrKnockout = /knock|tứ kết|bán kết|chung kết|play-off|quarter|semi|final/i.test(m.stage || '')
+                || Number(m.round) >= Math.ceil(totalRounds * 0.75);
+
+            [m.home, m.away].forEach((teamName, sideIdx) => {
+                const club = masterClubs[teamName];
+                if (!club) return;
+                const won = sideIdx === 0 ? m.homeScore > m.awayScore : m.awayScore > m.homeScore;
+                const cleanSheet = sideIdx === 0 ? m.awayScore === 0 : m.homeScore === 0;
+
+                club.players.forEach((pl, idx) => {
+                    const entry = ensureSeasonEntry(pl, teamName);
+                    entry.appearances += 1;
+                    if (won) entry.keyMatchImpact += isKeyOrKnockout ? 2 : 1;
+                    if (cleanSheet && (idx === 0 || parsePlayerRole(pl) === 'DEF')) {
+                        entry.cs += 1;
+                    }
+                });
+            });
+
+            (m.events || []).forEach(ev => {
+                const entry = ensureSeasonEntry(ev.player, ev.team);
+                if (ev.type === 'goal') {
+                    entry.goals += 1;
+                    if (isKeyOrKnockout) entry.keyMatchImpact += 2.5;
+                } else if (ev.type === 'assist') {
+                    entry.assists += 1;
+                    if (isKeyOrKnockout) entry.keyMatchImpact += 1.5;
+                }
+            });
+        });
+    });
+
+    const scoredList = Object.values(seasonMap).map(p => {
+        const consistencyScore = p.appearances * 0.6;
+        const outputScore = (p.goals * 3.5) + (p.assists * 2.5) + (p.cs * 3.0);
+        const clutchAndTrophyScore = (p.keyMatchImpact * 1.5) + (p.trophies.length * 10);
+        return {
+            ...p,
+            rating: Number((consistencyScore + outputScore + clutchAndTrophyScore).toFixed(1))
+        };
+    });
+
+    return buildBestXIByTactics(scoredList);
+}
+
 // ============================================================================
 // 5. ĐIỀU HƯỚNG & RENDER GIAO DIỆN CHÍNH
 // ============================================================================
@@ -807,6 +964,46 @@ function renderHonorsView(container) {
                     ` : ''}
                 </div>
             </div>
+
+            <!-- Đội Hình Tiêu Biểu Mùa Giải (Team of the Season) -->
+            ${(() => {
+                const tots = calculateTeamOfTheSeason();
+                const roleLabels = { GK: 'Thủ Môn', DEF: 'Hậu Vệ', MID: 'Tiền Vệ', FWD: 'Tiền Đạo' };
+                return `
+                <div class="glass-card rounded-2xl p-5 border border-emerald-500/30">
+                    <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+                        <div>
+                            <h3 class="text-base font-extrabold text-white flex items-center gap-2">
+                                <i class="fa-solid fa-people-group text-emerald-400"></i>
+                                <span>Đội Hình Tiêu Biểu Mùa Giải (Team of the Season - 4-3-3)</span>
+                            </h3>
+                            <p class="text-[11px] text-slate-400 mt-0.5">
+                                Tiêu chí: Duy trì phong độ ổn định xuyên suốt chiến dịch • Tạo dấu ấn ở trận then chốt / knock-out • Cân bằng chiến thuật 11 vị trí.
+                            </p>
+                        </div>
+                        <span class="px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-300 text-[11px] font-bold">
+                            Tổng hợp toàn bộ giải đấu
+                        </span>
+                    </div>
+                    ${tots.length > 0 ? `
+                        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                            ${tots.map(p => `
+                                <div class="p-3 rounded-xl bg-pitch-950/90 border border-slate-800 flex items-center justify-between gap-2">
+                                    <div class="min-w-0">
+                                        <span class="text-[10px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">${roleLabels[p.role] || p.role}</span>
+                                        <p class="text-xs font-bold text-white truncate mt-1">${escHtml(p.player)}</p>
+                                        <p class="text-[11px] text-slate-400 truncate">${escHtml(p.team)} • ${p.appearances} trận</p>
+                                    </div>
+                                    <div class="text-right shrink-0">
+                                        <span class="text-xs font-black text-amber-400">${p.rating}đ</span>
+                                        <p class="text-[10px] text-slate-400">${p.role === 'GK' || p.role === 'DEF' ? `${p.cs} CS` : `${p.goals}G / ${p.assists}A`}</p>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    ` : `<p class="text-xs text-slate-400">Chưa đủ dữ liệu trận đấu để bình chọn Đội hình tiêu biểu mùa giải.</p>`}
+                </div>`;
+            })()}
 
             <!-- Danh Sách Các Nhà Vô Địch Giải Đấu -->
             <div class="glass-card rounded-2xl p-5">
@@ -1120,6 +1317,42 @@ function renderTournamentView(container, tournament) {
                             </div>
                         ` : `<p class="text-xs text-slate-400">Chưa có dữ liệu giữ sạch lưới.</p>`}
                     </div>
+
+                    <!-- Đội Hình Tiêu Biểu Lượt Trận (Team of the Matchday) -->
+                    ${(() => {
+                        const playedRounds = [...new Set(tournament.matches.filter(m => m.played).map(m => m.round))].sort((a, b) => b - a);
+                        const activeRound = selectedRoundFilter !== 'all' ? selectedRoundFilter : playedRounds[0];
+                        const totw = activeRound ? calculateTeamOfTheMatchday(tournament.id, activeRound) : [];
+                        return `
+                        <div class="glass-card rounded-2xl p-4 border border-sky-500/25">
+                            <div class="flex items-center justify-between gap-2 mb-1.5">
+                                <h3 class="text-sm font-extrabold text-white flex items-center gap-2">
+                                    <i class="fa-solid fa-star text-sky-400"></i>
+                                    <span>Đội Hình Tiêu Biểu ${activeRound ? `Vòng ${activeRound}` : 'Lượt Trận'}</span>
+                                </h3>
+                            </div>
+                            <p class="text-[11px] text-slate-400 mb-3">
+                                Vinh danh màn trình diễn nổi bật nhất lượt đấu (ghi bàn, kiến tạo, cứu thua / giữ sạch lưới quyết định).
+                            </p>
+                            ${totw.length > 0 ? `
+                                <div class="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+                                    ${totw.map(p => `
+                                        <div class="flex items-center justify-between p-2 rounded-xl bg-pitch-950/80 border border-slate-800/80 text-xs">
+                                            <div class="min-w-0 pr-2">
+                                                <p class="font-bold text-white truncate">
+                                                    <span class="text-[10px] text-sky-400 font-extrabold mr-1">[${p.role}]</span>${escHtml(p.player)}
+                                                </p>
+                                                <p class="text-[10px] text-slate-400 truncate">${escHtml(p.team)}</p>
+                                            </div>
+                                            <span class="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 font-bold text-[11px] shrink-0">
+                                                ${p.role === 'GK' || p.role === 'DEF' ? `${p.cs} CS` : `${p.goals}G ${p.assists}A`}
+                                            </span>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            ` : `<p class="text-xs text-slate-400">Chưa có trận đấu hoàn thành ở lượt này.</p>`}
+                        </div>`;
+                    })()}
                 </div>
             </div>
         </div>
@@ -1761,7 +1994,8 @@ function saveCurrentAwardsSnapshot() {
         seasonName: `Mùa Giải #${appState.honorsHistory.length + 1}`,
         ballonDor: ballonDorRanking[0] ? `${ballonDorRanking[0].player} (${ballonDorRanking[0].team} - ${ballonDorRanking[0].score}đ)` : 'Chưa có',
         yashin: yashinRanking[0] ? `${yashinRanking[0].player} (${yashinRanking[0].team} - ${yashinRanking[0].cs} CS)` : 'Chưa có',
-        championsSummary: champions.length > 0 ? champions.join(' | ') : 'Chưa trao cúp giải đấu'
+        championsSummary: champions.length > 0 ? champions.join(' | ') : 'Chưa trao cúp giải đấu',
+        tots: calculateTeamOfTheSeason().map(p => `${p.player} (${p.team})`).join(', ')
     };
 
     appState.honorsHistory.unshift(snapshot);
